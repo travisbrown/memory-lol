@@ -1,0 +1,31 @@
+{
+    "type": "record",
+    "namespace": "lol.memory.ts.avro",
+    "name": "User",
+    "fields": [
+        { "name": "id", "type": "long" },
+        { "name": "timestamp", "type": { "type": "long", "logicalType": "timestamp-millis" } },
+        { "name": "screen_name", "type": "string" },
+        { "name": "name", "type": "string" },
+        { "name": "location", "type": ["null", "string"] },
+        { "name": "url", "type": ["null", "string"]},
+        { "name": "description", "type": ["null", "string"]},
+        { "name": "protected", "type": "boolean", "default": false },
+        { "name": "verified", "type": "boolean", "default": false },
+        { "name": "followers_count", "type": "long" },
+        { "name": "friends_count", "type": "long" },
+        { "name": "listed_count", "type": "long" },
+        { "name": "favourites_count", "type": "long" },
+        { "name": "statuses_count", "type": "long" },
+        { "name": "created_at", "type": { "type": "long", "logicalType": "timestamp-millis" } },
+        { "name": "profile_image_url", "type": "string" },
+        { "name": "profile_banner_url", "type": ["null", "string"] },
+        { "name": "profile_background_image_url", "type": ["null", "string"] },
+        { "name": "default_profile", "type": "boolean" },
+        { "name": "default_profile_image", "type": "boolean" },
+        { "name": "withheld_in_countries", "type": { "type": "array", "items": "string", "default": [] } },
+        { "name": "time_zone", "type": ["null", "string"] },
+        { "name": "lang", "type": ["null", "string"] },
+        { "name": "geo_enabled", "type": ["null", "boolean"] }
+    ]
+}
