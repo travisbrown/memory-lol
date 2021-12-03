@@ -8,7 +8,6 @@ import java.util.HashSet;
 import java.util.Set;
 import java.util.function.Consumer;
 import lol.memory.ts.archive.Archive;
-import lol.memory.ts.archive.Record;
 
 /**
  * Application that exports user JSON objects with a snapshot timestamp (as epoch second).
@@ -23,10 +22,10 @@ public class UserJsonExport {
         var archive = Archive.load(dataFile);
         var users = new HashSet<JSONObject>();
 
-        archive.runConsumer(new Consumer<Record<Item>>() {
-            public void accept(Record<Item> record) {
-                if (record.getValue().isTweet()) {
-                    UserJsonExport.extractUserObjects(selectedUserIds, users, record.getValue().asTweet().get());
+        archive.process(new Consumer<Item>() {
+            public void accept(Item item) {
+                if (item.isTweet()) {
+                    UserJsonExport.extractUserObjects(selectedUserIds, users, item.asTweet().get());
 
                     for (JSONObject user : users) {
                         synchronized (System.out) {

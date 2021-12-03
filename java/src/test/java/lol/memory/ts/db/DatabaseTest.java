@@ -21,8 +21,8 @@ public class DatabaseTest {
     public void importZipExample() throws IOException, RocksDBException {
         var archive = Archive.load(Paths.get("../examples/archives/twitter-stream-2021-01-01.zip"));
         var dbPath = Files.createTempDirectory("metadata-db");
-        var importer = ImportMetadata.create(dbPath.toString());
+        var importer = new MetadataImporter(dbPath.toString());
 
-        archive.run(importer);
+        archive.process(importer);
     }
 }

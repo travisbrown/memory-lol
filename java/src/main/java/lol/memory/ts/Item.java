@@ -89,14 +89,18 @@ public abstract class Item {
         return Optional.empty();
     }
 
-    public static Optional<? extends Item> fromJson(JSONObject value) {
+    public static Optional<Item> fromJson(JSONObject value) {
         var deleteObject = value.getJSONObject("delete");
 
+        Optional<? extends Item> result;
+
         if (deleteObject != null) {
-            return Item.decodeDelete(deleteObject);
+            result = Item.decodeDelete(deleteObject);
         } else {
-            return Item.decodeTweet(value, Optional.empty(), Optional.empty());
+            result = Item.decodeTweet(value, Optional.empty(), Optional.empty());
         }
+
+        return (Optional<Item>) (Optional<?>) result;
     }
 
     public static final class Delete extends Item {
@@ -184,6 +188,10 @@ public abstract class Item {
 
         public boolean isTweet() {
             return true;
+        }
+
+        public Optional<Long> getQuotedStatusId() {
+            return Optional.ofNullable(this.value.getLong("quoted_status_id_str"));
         }
 
         public Optional<Tweet> getQuotedStatus() {

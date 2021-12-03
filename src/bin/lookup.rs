@@ -30,12 +30,48 @@ fn main() -> Result<(), Error> {
             let db = Lookup::new(opts.db)?;
             println!("{:?}", db.get_stats()?);
         }
+        SubCommand::Files => {
+            let db = Lookup::new(opts.db)?;
+            let completed_files = db.get_completed_files()?;
+
+            for (archive_path, file_path, status_count) in completed_files {
+                println!("{}, {}: {}", archive_path, file_path, status_count);
+            }
+        }
+        SubCommand::DumpUserIds => {
+            let db = Lookup::new(opts.db)?;
+
+            for user_id in db.get_user_ids()? {
+                println!("{}", user_id);
+            }
+        }
+        SubCommand::DumpFullStatusIds => {
+            let db = Lookup::new(opts.db)?;
+
+            for status_id in db.get_full_status_ids()? {
+                println!("{}", status_id);
+            }
+        }
+        SubCommand::DumpShortStatusIds => {
+            let db = Lookup::new(opts.db)?;
+
+            for status_id in db.get_short_status_ids()? {
+                println!("{}", status_id);
+            }
+        }
+        SubCommand::DumpDeleteIds => {
+            let db = Lookup::new(opts.db)?;
+
+            for status_id in db.get_delete_ids()? {
+                println!("{}", status_id);
+            }
+        }
         SubCommand::ExtendedUser { user_id } => {
             let db = memory_lol::extended::UserLookup::new(opts.db)?;
             let results = db.lookup_user(user_id)?;
 
             for result in results {
-            println!("{:?}", result);
+                println!("{:?}", result);
             }
         }
     }
@@ -75,6 +111,11 @@ enum SubCommand {
         user_id: u64,
     },
     Stats,
+    Files,
+    DumpUserIds,
+    DumpFullStatusIds,
+    DumpShortStatusIds,
+    DumpDeleteIds,
     ExtendedUser {
         /// User ID
         user_id: u64,

@@ -1,7 +1,7 @@
 use super::error::Error;
 use byteorder::{ReadBytesExt, WriteBytesExt, BE};
 use chrono::{DateTime, NaiveDateTime, Utc};
-use rocksdb::{IteratorMode, Options, DB};
+use rocksdb::{Options, DB};
 use std::io::Cursor;
 use std::path::Path;
 
@@ -9,8 +9,10 @@ use std::path::Path;
 enum Tag {
     User,
     ScreenName,
-    Status,
+    ShortStatus,
+    FullStatus,
     Delete,
+    CompletedFile,
 }
 
 impl Tag {
@@ -18,8 +20,10 @@ impl Tag {
         match self {
             Tag::User => 0,
             Tag::ScreenName => 1,
-            Tag::Status => 2,
-            Tag::Delete => 3,
+            Tag::FullStatus => 2,
+            Tag::ShortStatus => 3,
+            Tag::Delete => 4,
+            Tag::CompletedFile => 16,
         }
     }
 }
@@ -45,20 +49,33 @@ impl Lookup {
         Ok(prefix)
     }
 
-    fn decode_user_key(bytes: &[u8]) -> Result<(u64, String), Error> {
+    fn decode_user_key(bytes: &[u8]) -> Result<(u8, u64, String), Error> {
         let mut cursor = Cursor::new(bytes);
-        cursor.read_u8()?;
+        let tag = cursor.read_u8()?;
         let user_id = cursor.read_u64::<BE>()?;
         let screen_name = std::str::from_utf8(cursor.remaining_slice())?.to_string();
-        Ok((user_id, screen_name))
+        Ok((tag, user_id, screen_name))
     }
 
-    fn decode_delete_key(bytes: &[u8]) -> Result<(u64, u64), Error> {
+    fn decode_delete_key(bytes: &[u8]) -> Result<(u8, u64, u64), Error> {
         let mut cursor = Cursor::new(bytes);
-        cursor.read_u8()?;
+        let tag = cursor.read_u8()?;
         let user_id = cursor.read_u64::<BE>()?;
         let status_id = cursor.read_u64::<BE>()?;
-        Ok((user_id, status_id))
+        Ok((tag, user_id, status_id))
+    }
+
+    fn decode_completed_file_key(bytes: &[u8]) -> Result<(u8, String, String), Error> {
+        let mut cursor = Cursor::new(bytes);
+        let tag = cursor.read_u8()?;
+        let value = std::str::from_utf8(cursor.remaining_slice())?.to_string();
+        let parts = value.split('|').collect::<Vec<_>>();
+
+        if parts.len() != 2 {
+            Err(Error::UnexpectedKey(value))
+        } else {
+            Ok((tag, parts[0].to_string(), parts[1].to_string()))
+        }
     }
 
     pub fn lookup_user(&self, user_id: u64) -> Result<Vec<(String, Vec<u64>)>, Error> {
@@ -67,9 +84,9 @@ impl Lookup {
         let mut result = vec![];
 
         for (key, value) in iter {
-            let (current_user_id, screen_name) = Self::decode_user_key(&key)?;
+            let (tag, current_user_id, screen_name) = Self::decode_user_key(&key)?;
 
-            if current_user_id != user_id {
+            if tag != Tag::User.value() || current_user_id != user_id {
                 break;
             }
 
@@ -109,61 +126,52 @@ impl Lookup {
 
     pub fn lookup_tweet_metadata(&self, status_id: u64) -> Result<Option<TweetMetadata>, Error> {
         let mut key = Vec::with_capacity(9);
-        key.write_u8(Tag::Status.value())?;
+        key.write_u8(Tag::FullStatus.value())?;
         key.write_u64::<BE>(status_id)?;
 
         let result = match self.db.get_pinned(key)? {
             Some(value) => {
                 let mut cursor = Cursor::new(value);
+                let tag = cursor.read_u8()?;
                 let user_id = cursor.read_u64::<BE>()?;
 
-                if cursor.is_empty() {
-                    Some(TweetMetadata::Short { status_id, user_id })
+                let timestamp = millis_to_date_time(cursor.read_u64::<BE>()?);
+
+                if tag == 4 {
+                    let retweeted_id = cursor.read_u64::<BE>()?;
+
+                    Some(TweetMetadata::Retweet {
+                        status_id,
+                        timestamp,
+                        user_id,
+                        retweeted_id,
+                    })
                 } else {
-                    let timestamp = if is_snowflake(status_id) {
-                        snowflake_to_date_time(status_id)
+                    let replied_to_id = if tag == 1 || tag == 3 {
+                        Some(cursor.read_u64::<BE>()?)
                     } else {
-                        millis_to_date_time(cursor.read_u64::<BE>()?)
+                        None
                     };
 
-                    let tag = cursor.read_u8()?;
-
-                    if tag == 4 {
-                        let retweeted_id = cursor.read_u64::<BE>()?;
-
-                        Some(TweetMetadata::Retweet {
-                            status_id,
-                            timestamp,
-                            user_id,
-                            retweeted_id,
-                        })
+                    let quoted_id = if tag == 2 || tag == 3 {
+                        Some(cursor.read_u64::<BE>()?)
                     } else {
-                        let replied_to_id = if tag == 1 || tag == 3 {
-                            Some(cursor.read_u64::<BE>()?)
-                        } else {
-                            None
-                        };
+                        None
+                    };
 
-                        let quoted_id = if tag == 2 || tag == 3 {
-                            Some(cursor.read_u64::<BE>()?)
-                        } else {
-                            None
-                        };
-
-                        let mut mentioned_user_ids = vec![];
-                        while !cursor.is_empty() {
-                            mentioned_user_ids.push(cursor.read_u64::<BE>()?);
-                        }
-
-                        Some(TweetMetadata::Full {
-                            status_id,
-                            timestamp,
-                            user_id,
-                            replied_to_id,
-                            quoted_id,
-                            mentioned_user_ids,
-                        })
+                    let mut mentioned_user_ids = vec![];
+                    while !cursor.is_empty() {
+                        mentioned_user_ids.push(cursor.read_u64::<BE>()?);
                     }
+
+                    Some(TweetMetadata::Full {
+                        status_id,
+                        timestamp,
+                        user_id,
+                        replied_to_id,
+                        quoted_id,
+                        mentioned_user_ids,
+                    })
                 }
             }
             None => None,
@@ -178,9 +186,9 @@ impl Lookup {
         let mut result = vec![];
 
         for (key, value) in iter {
-            let (current_user_id, status_id) = Self::decode_delete_key(&key)?;
+            let (tag, current_user_id, status_id) = Self::decode_delete_key(&key)?;
 
-            if current_user_id != user_id {
+            if tag != Tag::Delete.value() || current_user_id != user_id {
                 break;
             }
 
@@ -205,53 +213,135 @@ impl Lookup {
             .unwrap())
     }
 
+    pub fn get_completed_files(&self) -> Result<Vec<(String, String, u64)>, Error> {
+        let mut prefix = Vec::with_capacity(9);
+        prefix.write_u8(Tag::CompletedFile.value())?;
+
+        let iter = self.db.prefix_iterator(prefix);
+        let mut result = vec![];
+
+        for (key, value) in iter {
+            let (tag, archive_path, file_path) = Self::decode_completed_file_key(&key)?;
+
+            if tag != Tag::CompletedFile.value() {
+                break;
+            }
+
+            let mut cursor = Cursor::new(value);
+            let status_count = cursor.read_u64::<BE>()?;
+
+            result.push((archive_path, file_path, status_count));
+        }
+
+        Ok(result)
+    }
+
+    fn get_entries_for_tag(&self, tag: Tag) -> impl Iterator<Item = (Box<[u8]>, Box<[u8]>)> + '_ {
+        let mut prefix = Vec::with_capacity(1);
+        prefix.push(tag.value());
+        self.db
+            .prefix_iterator(&prefix)
+            .take_while(move |(key, _)| {
+                let mut cursor = Cursor::new(key);
+                match cursor.read_u8() {
+                    Ok(next_tag) => next_tag == tag.value(),
+                    Err(_) => false,
+                }
+            })
+    }
+
+    pub fn get_user_ids(&self) -> Result<Vec<u64>, Error> {
+        let mut result = vec![];
+
+        for (key, _) in self.get_entries_for_tag(Tag::User) {
+            let mut cursor = Cursor::new(key);
+            cursor.read_u8()?;
+            let user_id = cursor.read_u64::<BE>()?;
+            result.push(user_id);
+        }
+
+        Ok(result)
+    }
+
+    pub fn get_full_status_ids(&self) -> Result<Vec<u64>, Error> {
+        let mut result = vec![];
+
+        for (key, _) in self.get_entries_for_tag(Tag::FullStatus) {
+            let mut cursor = Cursor::new(key);
+            cursor.read_u8()?;
+            let status_id = cursor.read_u64::<BE>()?;
+            result.push(status_id);
+        }
+
+        Ok(result)
+    }
+
+    pub fn get_short_status_ids(&self) -> Result<Vec<u64>, Error> {
+        let mut result = vec![];
+
+        for (key, _) in self.get_entries_for_tag(Tag::ShortStatus) {
+            let mut cursor = Cursor::new(key);
+            cursor.read_u8()?;
+            let status_id = cursor.read_u64::<BE>()?;
+            result.push(status_id);
+        }
+
+        Ok(result)
+    }
+
+    pub fn get_delete_ids(&self) -> Result<Vec<u64>, Error> {
+        let mut result = vec![];
+
+        for (key, _) in self.get_entries_for_tag(Tag::Delete) {
+            let mut cursor = Cursor::new(key);
+            cursor.read_u8()?;
+            let status_id = cursor.read_u64::<BE>()?;
+            result.push(status_id);
+        }
+
+        Ok(result)
+    }
+
     pub fn get_stats(&self) -> Result<Stats, Error> {
         let mut pair_count = 0;
         let mut user_id_count = 0;
         let mut appearance_count = 0;
         let mut screen_name_count = 0;
-        let mut status_count = 0;
+        let mut full_status_count = 0;
+        let mut short_status_count = 0;
         let mut delete_count = 0;
+        let mut completed_file_count = 0;
 
-        let iter = self.db.iterator(IteratorMode::Start);
         let mut last_user_id = 0;
 
-        for (key, value) in iter {
+        for (key, value) in self.get_entries_for_tag(Tag::User) {
             let mut cursor = Cursor::new(key);
-            let tag = cursor.read_u8()?;
+            cursor.read_u8()?;
 
-            match tag {
-                0 => {
-                    pair_count += 1;
-                    let user_id = cursor.read_u64::<BE>()?;
-                    if user_id != last_user_id {
-                        user_id_count += 1;
-                        last_user_id = user_id;
-                    }
-                    appearance_count += (value.len() / 8) as u64;
-                }
-                1 => {
-                    screen_name_count += 1;
-                }
-                2 => {
-                    status_count += 1;
-                }
-                3 => {
-                    delete_count += 2;
-                }
-                _ => {
-                    return Err(Error::UnexpectedKey(format!("Invalid tag: {}", tag)));
-                }
+            pair_count += 1;
+            let user_id = cursor.read_u64::<BE>()?;
+            if user_id != last_user_id {
+                user_id_count += 1;
+                last_user_id = user_id;
             }
+            appearance_count += value.len() / 8;
         }
+
+        screen_name_count += self.get_entries_for_tag(Tag::ScreenName).count();
+        full_status_count += self.get_entries_for_tag(Tag::FullStatus).count();
+        short_status_count += self.get_entries_for_tag(Tag::ShortStatus).count();
+        delete_count += self.get_entries_for_tag(Tag::Delete).count();
+        completed_file_count += self.get_entries_for_tag(Tag::CompletedFile).count();
 
         Ok(Stats {
             pair_count,
             user_id_count,
             appearance_count,
             screen_name_count,
-            status_count,
+            full_status_count,
+            short_status_count,
             delete_count,
+            completed_file_count,
         })
     }
 }
@@ -280,12 +370,14 @@ fn snowflake_to_date_time(value: u64) -> DateTime<Utc> {
 
 #[derive(Debug, Eq, PartialEq)]
 pub struct Stats {
-    pub pair_count: u64,
-    pub user_id_count: u64,
-    pub appearance_count: u64,
-    pub screen_name_count: u64,
-    pub status_count: u64,
-    pub delete_count: u64,
+    pub pair_count: usize,
+    pub user_id_count: usize,
+    pub appearance_count: usize,
+    pub screen_name_count: usize,
+    pub full_status_count: usize,
+    pub short_status_count: usize,
+    pub delete_count: usize,
+    pub completed_file_count: usize,
 }
 
 #[derive(Debug)]
@@ -352,12 +444,14 @@ mod tests {
         assert_eq!(db.lookup_screen_name("genflynn").unwrap(), vec![240454812]);
 
         let expected_stats = Stats {
-            pair_count: 9360,
-            user_id_count: 9360,
-            appearance_count: 9745,
-            screen_name_count: 9360,
-            status_count: 9841,
-            delete_count: 1662,
+            pair_count: 10757,
+            user_id_count: 10757,
+            appearance_count: 10852,
+            screen_name_count: 10757,
+            full_status_count: 8130,
+            short_status_count: 1743,
+            delete_count: 831,
+            completed_file_count: 2,
         };
 
         assert_eq!(db.get_stats().unwrap(), expected_stats);

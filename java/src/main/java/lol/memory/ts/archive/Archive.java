@@ -1,40 +1,45 @@
 package lol.memory.ts.archive;
 
-import com.alibaba.fastjson.JSON;
-import com.alibaba.fastjson.JSONException;
-import com.alibaba.fastjson.parser.Feature;
-import java.io.BufferedInputStream;
-import java.io.BufferedReader;
 import java.io.File;
 import java.io.IOException;
 import java.io.InputStream;
-import java.io.InputStreamReader;
 import java.nio.file.Path;
+import java.util.Iterator;
 import java.util.Optional;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 import java.util.function.Consumer;
 import lol.memory.ts.Item;
-import org.apache.commons.compress.compressors.bzip2.BZip2CompressorInputStream;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-public abstract class Archive {
+public abstract class Archive<E> {
     /**
      * Demonstration driver (just prints status IDs).
      */
     public static void main(String[] args) throws IOException {
-        var archive = Archive.load(new File(args[0]));
+        Archive<?> archive = Archive.load(new File(args[0]));
 
-        archive.runConsumer(record -> System.out.println(record.getValue().getStatusId()));
+        archive.process(item -> System.out.println(item.getStatusId()));
     }
 
     private static final Logger logger = LoggerFactory.getLogger(Archive.class);
     private final Path path;
     private final int numThreads;
 
-    protected abstract Iterable<EntryJob> entryJobs(RecordConsumer<Item> process);
+    Archive(Path path, int numThreads) {
+        this.path = path;
+        this.numThreads = numThreads;
+    }
+
+    protected abstract Iterator<E> getEntries();
+
+    protected abstract boolean isEntryValidFile(E entry);
+
+    protected abstract String getEntryFilePath(E entry);
+
+    protected abstract InputStream getEntryInputStream(E entry) throws IOException;
 
     protected final Path getPath() {
         return this.path;
@@ -48,7 +53,7 @@ public abstract class Archive {
         return Archive.load(path, Runtime.getRuntime().availableProcessors());
     }
 
-    public static Archive load(File file, int numThreads) {
+    public static Archive<?> load(File file, int numThreads) {
         if (file.getName().endsWith("tar")) {
             return new TarArchive(file.toPath(), numThreads);
         } else {
@@ -64,110 +69,61 @@ public abstract class Archive {
         }
     }
 
-    Archive(Path path, int numThreads) {
-        this.path = path;
-        this.numThreads = numThreads;
-    }
-
-    /**
-     * Perform an action on every item (tweet or deletion) in this archive.
-     */
-    public final boolean run(RecordConsumer<Item> process) {
-        ExecutorService pool = Executors.newFixedThreadPool(this.numThreads);
-        for (EntryJob job : this.entryJobs(process)) {
-            pool.submit(job);
+    private static boolean shutdown(ExecutorService service, boolean hard, Optional<Throwable> reason) {
+        if (reason.isPresent()) {
+            var leftovers = service.shutdownNow();
+            Archive.logger.error("Fatal error processing archive ({} tasks unfinished): {}", leftovers.size(),
+                    reason.get().getMessage());
+        } else if (hard) {
+            var leftovers = service.shutdownNow();
+            Archive.logger.error("Fatal error processing archive ({} tasks unfinished)", leftovers.size());
+        } else {
+            service.shutdown();
         }
-        pool.shutdown();
+
         try {
-            return pool.awaitTermination(48, TimeUnit.HOURS);
+            return service.awaitTermination(48, TimeUnit.HOURS);
         } catch (InterruptedException error) {
             Archive.logger.error("Error shutting down execution: {}", error.getMessage());
             return false;
         }
     }
 
-    /**
-     * Perform an action on every item (tweet or deletion) in this archive.
-     *
-     * Wraps a consumer that doesn't treat any exceptions as fatal.
-     */
-    public final boolean runConsumer(Consumer<Record<Item>> process) {
-        return this.run(RecordConsumer.wrap(process));
+    public final boolean process(Consumer<Item> processor) {
+        return this.process(FileResultConsumer.ofItemConsumer(processor));
     }
 
-    protected abstract class EntryJob implements Runnable {
-        private final RecordConsumer<Item> process;
+    public final boolean process(FileResultConsumer<Item> processor) {
+        var pool = Executors.newFixedThreadPool(this.numThreads);
+        var service = new BoundedCompletionService<FileResult<Item>>(pool, 32);
 
-        EntryJob(RecordConsumer<Item> process) {
-            this.process = process;
-        }
+        var entries = this.getEntries();
+        int count = 0;
 
-        protected abstract boolean isValidFile();
+        while (entries.hasNext()) {
+            var entry = entries.next();
 
-        protected abstract Optional<String> getFilePath();
-
-        protected abstract InputStream getInputStream();
-
-        public final void run() {
-            try {
-                if (this.isValidFile()) {
-                    var filePath = this.getFilePath();
-                    InputStream stream = null;
-                    BufferedReader reader = null;
-                    try {
-                        stream = this.getInputStream();
-                        var buffered = new BufferedInputStream(stream);
-                        var bzip2 = new BZip2CompressorInputStream(buffered, true);
-                        reader = new BufferedReader(new InputStreamReader(bzip2));
-
-                        String line = reader.readLine();
-                        int lineNumber = 1;
-                        while (line != null) {
-                            try {
-                                var value = JSON.parseObject(line, Feature.OrderedField);
-                                var item = Item.fromJson(value);
-
-                                if (item.isPresent()) {
-                                    this.process.accept(
-                                            new Record(Archive.this.getPath(), filePath, lineNumber, item.get()));
-                                }
-                            } catch (JSONException error) {
-                                Archive.logger.error("Error parsing JSON ({}): {}", filePath.orElseGet(() -> "<none>"),
-                                        error.getMessage());
-                            }
-                            line = reader.readLine();
-                            lineNumber += 1;
-                        }
-                    } catch (IOException error) {
-                        Archive.logger.error("Error reading archive file ({}): {}", filePath.orElseGet(() -> "<none>"),
-                                error.getMessage());
-                    } finally {
-                        if (reader != null) {
-                            try {
-                                reader.close();
-                            } catch (IOException error) {
-                                Archive.logger.error("Error closing archive file ({}): {}",
-                                        filePath.orElseGet(() -> "<none>"), error.getMessage());
-                            }
-                        }
-
-                        if (stream != null) {
-                            try {
-                                stream.close();
-                            } catch (IOException error) {
-                                Archive.logger.error("Error closing archive file ({}): {}",
-                                        filePath.orElseGet(() -> "<none>"), error.getMessage());
-                            }
-                        }
-                    }
-                }
-            } catch (Throwable error) {
-                if (this.process.isFatal(error)) {
-                    throw error;
-                } else {
-                    Archive.logger.error("Unhandled exception in worker: {}", error.getMessage());
-                }
+            if (this.isEntryValidFile(entry) && !processor.skipFile(this.path, this.getEntryFilePath(entry))) {
+                service.submit(new ItemParser(this, entry));
+                count += 1;
             }
         }
+
+        for (int i = 0; i < count; i += 1) {
+            try {
+                FileResult<Item> result = service.take().get();
+                if (!processor.accept(Archive.this.path, result)) {
+                    return Archive.shutdown(pool, true, Optional.empty());
+                }
+            } catch (InterruptedException error) {
+                Thread.currentThread().interrupt();
+                return Archive.shutdown(pool, true, Optional.of(error));
+            } catch (Exception error) {
+                error.printStackTrace();
+                Archive.logger.error("Unhandled exception while processing archive: {}", error.getMessage());
+            }
+        }
+
+        return Archive.shutdown(pool, false, Optional.empty());
     }
 }

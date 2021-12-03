@@ -22,8 +22,8 @@ public abstract class UserDbEntry {
         private static byte[] makeKey(long userId, long timestampMillis) {
             byte[] key = new byte[17];
             key[0] = TAG;
-            Entry.longToBytes(key, 1, userId);
-            Entry.longToBytes(key, 9, timestampMillis);
+            Entry.writeLong(key, 1, userId);
+            Entry.writeLong(key, 9, timestampMillis);
             return key;
         }
 
