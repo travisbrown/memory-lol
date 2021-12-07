@@ -13,6 +13,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
+import java.util.function.Function;
 import lol.memory.ts.archive.Archive;
 import lol.memory.ts.archive.FileResult;
 import lol.memory.ts.archive.FileResultConsumer;
@@ -23,7 +24,7 @@ import org.rocksdb.RocksDBException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-public final class MetadataImporter extends FileResultConsumer<Item> {
+final class MetadataImporter extends FileResultConsumer<MetadataBatch> {
     private static final Logger logger = LoggerFactory.getLogger(MetadataImporter.class);
     private static final byte COMPLETED_FILE_NAME_TAG = 16;
     private static final byte[] COMPLETED_FILE_NAME_PREFIX = new byte[] { MetadataImporter.COMPLETED_FILE_NAME_TAG };
@@ -51,13 +52,13 @@ public final class MetadataImporter extends FileResultConsumer<Item> {
         files.sort(Comparator.comparing(file -> file.getName()));
 
         var dbPath = args[1];
-        var importer = new MetadataImporter(dbPath);
+        FileResultConsumer<MetadataBatch> importer = new MetadataImporter(dbPath);
 
         for (File file : files) {
             MetadataImporter.logger.info("Importing metadata from {}", file.getName());
             var archive = Archive.load(file);
 
-            archive.process(importer);
+            archive.processWithTransformation(MetadataImporter.ITEMS_TO_BATCH, importer);
         }
     }
 
@@ -80,45 +81,6 @@ public final class MetadataImporter extends FileResultConsumer<Item> {
         }
     }
 
-    private static byte[] makeUserKey(long userId, String screenName) {
-        byte[] screenNameBytes = screenName.getBytes(StandardCharsets.UTF_8);
-        byte[] key = new byte[9 + screenNameBytes.length];
-        key[0] = 0;
-        Entry.writeLong(key, 1, userId);
-        System.arraycopy(screenNameBytes, 0, key, 9, screenNameBytes.length);
-        return key;
-    }
-
-    private static byte[] makeScreenNameKey(String screenName) {
-        byte[] screenNameBytes = screenName.toLowerCase().getBytes(StandardCharsets.UTF_8);
-        byte[] key = new byte[1 + screenNameBytes.length];
-        key[0] = 1;
-        System.arraycopy(screenNameBytes, 0, key, 1, screenNameBytes.length);
-        return key;
-    }
-
-    private static byte[] makeFullStatusKey(long statusId) {
-        byte[] key = new byte[9];
-        key[0] = 2;
-        Entry.writeLong(key, 1, statusId);
-        return key;
-    }
-
-    private static byte[] makeShortStatusKey(long statusId) {
-        byte[] key = new byte[9];
-        key[0] = 3;
-        Entry.writeLong(key, 1, statusId);
-        return key;
-    }
-
-    private static byte[] makeDeleteKey(long userId, long statusId) {
-        byte[] key = new byte[17];
-        key[0] = 4;
-        Entry.writeLong(key, 1, userId);
-        Entry.writeLong(key, 9, statusId);
-        return key;
-    }
-
     private static byte[] makeCompletedFileKey(String archivePath, String filePath) {
         String keyString = String.format("%s|%s", archivePath, filePath);
         byte[] keyStringBytes = keyString.getBytes(StandardCharsets.UTF_8);
@@ -128,102 +90,22 @@ public final class MetadataImporter extends FileResultConsumer<Item> {
         return key;
     }
 
-    private final class Batch {
-        final Map<byte[], Set<Long>> users = new HashMap<>();
-        final Map<byte[], Set<Long>> screenNames = new HashMap<>();
-        final Map<byte[], byte[]> statuses = new HashMap<>();
-        final Map<byte[], Long> shortStatuses = new HashMap<>();
-        final Map<byte[], Optional<Long>> deletes = new HashMap<>();
+    public static final Function<List<Optional<Item>>, MetadataBatch> ITEMS_TO_BATCH = new Function<List<Optional<Item>>, MetadataBatch>() {
+        public MetadataBatch apply(List<Optional<Item>> items) {
+            var batch = new MetadataBatch();
 
-        private void addUser(long userId, String screenName, long sourceStatusId) {
-            var userKey = MetadataImporter.makeUserKey(userId, screenName);
-            var userValue = this.users.get(userKey);
-            if (userValue == null) {
-                userValue = new HashSet<>();
-                this.users.put(userKey, userValue);
-            }
-            userValue.add(sourceStatusId);
-
-            var screenNameKey = MetadataImporter.makeScreenNameKey(screenName);
-            var screenNameValue = this.screenNames.get(screenNameKey);
-            if (screenNameValue == null) {
-                screenNameValue = new HashSet<>();
-                this.screenNames.put(screenNameKey, screenNameValue);
-            }
-            screenNameValue.add(userId);
-        }
-
-        public void addItem(Item item) throws IOException {
-            if (item.isDelete()) {
-                var delete = item.asDelete().get();
-                this.deletes.put(makeDeleteKey(delete.getUserId(), delete.getStatusId()), delete.getTimestampMillis());
-            } else {
-                this.addTweet(item.asTweet().get());
-            }
-        }
-
-        public void addTweet(Item.Tweet tweet) throws IOException {
-            var userInfo = tweet.getUserInfo();
-
-            this.addUser(userInfo.getUserId(), userInfo.getScreenName(), tweet.getSourceStatusId());
-
-            var maybeRetweetedStatus = tweet.getRetweetedStatus();
-            var maybeReplyInfo = tweet.getReplyInfo();
-            var maybeQuotedStatusId = tweet.getQuotedStatusId();
-            var maybeQuotedStatus = tweet.getQuotedStatus();
-
-            StatusValue userValue;
-
-            if (maybeRetweetedStatus.isPresent()) {
-                var retweetedStatus = maybeRetweetedStatus.get();
-
-                this.addTweet(retweetedStatus);
-                userValue = StatusValue.ofRetweet(userInfo.getUserId(), tweet.getTimestampMillis(),
-                        retweetedStatus.getStatusId());
-            } else {
-                if (maybeReplyInfo.isPresent()) {
-                    var replyInfo = maybeReplyInfo.get();
-                    this.addUser(replyInfo.getUserId(), replyInfo.getScreenName(), tweet.getSourceStatusId());
-                    this.shortStatuses.put(MetadataImporter.makeShortStatusKey(replyInfo.getStatusId()),
-                            replyInfo.getUserId());
+            for (Optional<Item> item : items) {
+                if (item.isPresent()) {
+                    batch.addItem(item.get());
                 }
-
-                if (maybeQuotedStatusId.isPresent()) {
-                    var quotedStatusId = maybeQuotedStatusId.get();
-                    if (maybeQuotedStatus.isPresent()) {
-                        this.addTweet(maybeQuotedStatus.get());
-                    }
-                } else {
-                    if (maybeQuotedStatus.isPresent()) {
-                        MetadataImporter.logger.error("Error: quoted_status without quoted_status_id_str in {}",
-                                tweet.getStatusId());
-                    }
-                }
-
-                var mentionedIds = new HashSet<Long>();
-                for (UserInfo.Full user : tweet.getUserMentions()) {
-                    mentionedIds.add(user.getUserId());
-                    this.addUser(user.getUserId(), user.getScreenName(), tweet.getSourceStatusId());
-                }
-
-                userValue = StatusValue.ofTweet(userInfo.getUserId(), tweet.getTimestampMillis(),
-                        maybeReplyInfo.map(replyInfo -> replyInfo.getStatusId()), maybeQuotedStatusId, mentionedIds);
             }
 
-            var statusKey = MetadataImporter.makeFullStatusKey(tweet.getStatusId());
-            this.statuses.put(statusKey, userValue.toByteArray());
+            return batch;
         }
-    }
+    };
 
-    public boolean accept(Path archivePath, FileResult<Item> result) throws Exception {
-        var batch = new Batch();
-
-        for (Optional<Item> item : result.getValues()) {
-            if (item.isPresent()) {
-                batch.addItem(item.get());
-            }
-        }
-
+    public boolean accept(Path archivePath, FileResult<MetadataBatch> result) throws Exception {
+        MetadataBatch batch = result.getValue();
         byte[][] allKeys = new byte[batch.users.size() + batch.screenNames.size() + batch.statuses.size()][];
         int i = 0;
 
@@ -381,5 +263,133 @@ public final class MetadataImporter extends FileResultConsumer<Item> {
 
         MetadataImporter.logger.info("Loaded {} known files", count);
         return result;
+    }
+}
+
+final class MetadataBatch {
+    private static final Logger logger = LoggerFactory.getLogger(MetadataBatch.class);
+
+    final Map<byte[], Set<Long>> users = new HashMap<>();
+    final Map<byte[], Set<Long>> screenNames = new HashMap<>();
+    final Map<byte[], byte[]> statuses = new HashMap<>();
+    final Map<byte[], Long> shortStatuses = new HashMap<>();
+    final Map<byte[], Optional<Long>> deletes = new HashMap<>();
+
+    private static byte[] makeUserKey(long userId, String screenName) {
+        byte[] screenNameBytes = screenName.getBytes(StandardCharsets.UTF_8);
+        byte[] key = new byte[9 + screenNameBytes.length];
+        key[0] = 0;
+        Entry.writeLong(key, 1, userId);
+        System.arraycopy(screenNameBytes, 0, key, 9, screenNameBytes.length);
+        return key;
+    }
+
+    private static byte[] makeScreenNameKey(String screenName) {
+        byte[] screenNameBytes = screenName.toLowerCase().getBytes(StandardCharsets.UTF_8);
+        byte[] key = new byte[1 + screenNameBytes.length];
+        key[0] = 1;
+        System.arraycopy(screenNameBytes, 0, key, 1, screenNameBytes.length);
+        return key;
+    }
+
+    private static byte[] makeFullStatusKey(long statusId) {
+        byte[] key = new byte[9];
+        key[0] = 2;
+        Entry.writeLong(key, 1, statusId);
+        return key;
+    }
+
+    private static byte[] makeShortStatusKey(long statusId) {
+        byte[] key = new byte[9];
+        key[0] = 3;
+        Entry.writeLong(key, 1, statusId);
+        return key;
+    }
+
+    private static byte[] makeDeleteKey(long userId, long statusId) {
+        byte[] key = new byte[17];
+        key[0] = 4;
+        Entry.writeLong(key, 1, userId);
+        Entry.writeLong(key, 9, statusId);
+        return key;
+    }
+
+    private void addUser(long userId, String screenName, long sourceStatusId) {
+        var userKey = MetadataBatch.makeUserKey(userId, screenName);
+        var userValue = this.users.get(userKey);
+        if (userValue == null) {
+            userValue = new HashSet<>();
+            this.users.put(userKey, userValue);
+        }
+        userValue.add(sourceStatusId);
+
+        var screenNameKey = MetadataBatch.makeScreenNameKey(screenName);
+        var screenNameValue = this.screenNames.get(screenNameKey);
+        if (screenNameValue == null) {
+            screenNameValue = new HashSet<>();
+            this.screenNames.put(screenNameKey, screenNameValue);
+        }
+        screenNameValue.add(userId);
+    }
+
+    public void addItem(Item item) {
+        if (item.isDelete()) {
+            var delete = item.asDelete().get();
+            this.deletes.put(makeDeleteKey(delete.getUserId(), delete.getStatusId()), delete.getTimestampMillis());
+        } else {
+            this.addTweet(item.asTweet().get());
+        }
+    }
+
+    public void addTweet(Item.Tweet tweet) {
+        var userInfo = tweet.getUserInfo();
+
+        this.addUser(userInfo.getUserId(), userInfo.getScreenName(), tweet.getSourceStatusId());
+
+        var maybeRetweetedStatus = tweet.getRetweetedStatus();
+        var maybeReplyInfo = tweet.getReplyInfo();
+        var maybeQuotedStatusId = tweet.getQuotedStatusId();
+        var maybeQuotedStatus = tweet.getQuotedStatus();
+
+        StatusValue userValue;
+
+        if (maybeRetweetedStatus.isPresent()) {
+            var retweetedStatus = maybeRetweetedStatus.get();
+
+            this.addTweet(retweetedStatus);
+            userValue = StatusValue.ofRetweet(userInfo.getUserId(), tweet.getTimestampMillis(),
+                    retweetedStatus.getStatusId());
+        } else {
+            if (maybeReplyInfo.isPresent()) {
+                var replyInfo = maybeReplyInfo.get();
+                this.addUser(replyInfo.getUserId(), replyInfo.getScreenName(), tweet.getSourceStatusId());
+                this.shortStatuses.put(MetadataBatch.makeShortStatusKey(replyInfo.getStatusId()),
+                        replyInfo.getUserId());
+            }
+
+            if (maybeQuotedStatusId.isPresent()) {
+                var quotedStatusId = maybeQuotedStatusId.get();
+                if (maybeQuotedStatus.isPresent()) {
+                    this.addTweet(maybeQuotedStatus.get());
+                }
+            } else {
+                if (maybeQuotedStatus.isPresent()) {
+                    MetadataBatch.logger.error("Error: quoted_status without quoted_status_id_str in {}",
+                            tweet.getStatusId());
+                }
+            }
+
+            var mentionedIds = new HashSet<Long>();
+            for (UserInfo.Full user : tweet.getUserMentions()) {
+                mentionedIds.add(user.getUserId());
+                this.addUser(user.getUserId(), user.getScreenName(), tweet.getSourceStatusId());
+            }
+
+            userValue = StatusValue.ofTweet(userInfo.getUserId(), tweet.getTimestampMillis(),
+                    maybeReplyInfo.map(replyInfo -> replyInfo.getStatusId()), maybeQuotedStatusId, mentionedIds);
+        }
+
+        var statusKey = MetadataBatch.makeFullStatusKey(tweet.getStatusId());
+        this.statuses.put(statusKey, userValue.toByteArray());
     }
 }

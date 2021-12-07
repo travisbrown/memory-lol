@@ -1,22 +1,35 @@
 package lol.memory.ts.archive;
 
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
+import java.util.function.Function;
+import lol.memory.ts.Item;
 
-public final class FileResult<T> {
+public class FileResult<T> {
     private final String path;
-    private final List<Optional<T>> values;
+    private final T value;
 
-    public String getPath() {
+    public final String getPath() {
         return this.path;
     }
 
-    public List<Optional<T>> getValues() {
-        return this.values;
+    public final T getValue() {
+        return this.value;
     }
 
-    FileResult(String path, List<Optional<T>> values) {
+    FileResult(String path, T value) {
         this.path = path;
-        this.values = values;
+        this.value = value;
+    }
+
+    public static final class Item extends FileResult<List<Optional<Item>>> {
+        Item(String path, List<Optional<Item>> value) {
+            super(path, value);
+        }
+    }
+
+    public final <U> FileResult<U> map(Function<T, U> transform) {
+        return new FileResult(this.path, transform.apply(this.value));
     }
 }

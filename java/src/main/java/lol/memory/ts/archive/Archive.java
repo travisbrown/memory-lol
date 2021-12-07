@@ -5,11 +5,13 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.nio.file.Path;
 import java.util.Iterator;
+import java.util.List;
 import java.util.Optional;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 import java.util.function.Consumer;
+import java.util.function.Function;
 import lol.memory.ts.Item;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -93,9 +95,9 @@ public abstract class Archive<E> {
         return this.process(FileResultConsumer.ofItemConsumer(processor));
     }
 
-    public final boolean process(FileResultConsumer<Item> processor) {
+    public final boolean process(FileResultConsumer<List<Optional<Item>>> processor) {
         var pool = Executors.newFixedThreadPool(this.numThreads);
-        var service = new BoundedCompletionService<FileResult<Item>>(pool, 32);
+        var service = new BoundedCompletionService<FileResult<List<Optional<Item>>>>(pool, 32);
 
         var entries = this.getEntries();
         int count = 0;
@@ -111,7 +113,42 @@ public abstract class Archive<E> {
 
         for (int i = 0; i < count; i += 1) {
             try {
-                FileResult<Item> result = service.take().get();
+                var result = service.take().get();
+                if (!processor.accept(Archive.this.path, result)) {
+                    return Archive.shutdown(pool, true, Optional.empty());
+                }
+            } catch (InterruptedException error) {
+                Thread.currentThread().interrupt();
+                return Archive.shutdown(pool, true, Optional.of(error));
+            } catch (Exception error) {
+                error.printStackTrace();
+                Archive.logger.error("Unhandled exception while processing archive: {}", error.getMessage());
+            }
+        }
+
+        return Archive.shutdown(pool, false, Optional.empty());
+    }
+
+    public final <T> boolean processWithTransformation(Function<List<Optional<Item>>, T> transform,
+            FileResultConsumer<T> processor) {
+        var pool = Executors.newFixedThreadPool(this.numThreads);
+        var service = new BoundedCompletionService<FileResult<T>>(pool, 32);
+
+        var entries = this.getEntries();
+        int count = 0;
+
+        while (entries.hasNext()) {
+            var entry = entries.next();
+
+            if (this.isEntryValidFile(entry) && !processor.skipFile(this.path, this.getEntryFilePath(entry))) {
+                service.submit(new ItemParser(this, entry).andThen(transform));
+                count += 1;
+            }
+        }
+
+        for (int i = 0; i < count; i += 1) {
+            try {
+                FileResult<T> result = service.take().get();
                 if (!processor.accept(Archive.this.path, result)) {
                     return Archive.shutdown(pool, true, Optional.empty());
                 }

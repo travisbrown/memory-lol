@@ -23,6 +23,6 @@ public class DatabaseTest {
         var dbPath = Files.createTempDirectory("metadata-db");
         var importer = new MetadataImporter(dbPath.toString());
 
-        archive.process(importer);
+        archive.processWithTransformation(MetadataImporter.ITEMS_TO_BATCH, importer);
     }
 }

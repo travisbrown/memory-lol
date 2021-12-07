@@ -5,6 +5,7 @@ import java.io.IOException;
 import java.nio.file.Path;
 import java.util.Collections;
 import java.util.HashSet;
+import java.util.List;
 import java.util.Optional;
 import java.util.Set;
 import lol.memory.ts.archive.Archive;
@@ -18,7 +19,7 @@ import org.rocksdb.RocksDBException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-public final class UserAvroImporter extends FileResultConsumer<Item> {
+public final class UserAvroImporter extends FileResultConsumer<List<Optional<Item>>> {
     private static final Logger logger = LoggerFactory.getLogger(UserAvroImporter.class);
     private final Database db;
     private final Set<Long> selectedUserIds;
@@ -42,8 +43,8 @@ public final class UserAvroImporter extends FileResultConsumer<Item> {
         return false;
     }
 
-    public boolean accept(Path archivePath, FileResult<Item> result) throws Exception {
-        for (Optional<Item> maybeItem : result.getValues()) {
+    public boolean accept(Path archivePath, FileResult<List<Optional<Item>>> result) throws Exception {
+        for (Optional<Item> maybeItem : result.getValue()) {
             if (maybeItem.isPresent() && maybeItem.get().isTweet()) {
                 try {
                     var users = new HashSet<User>();

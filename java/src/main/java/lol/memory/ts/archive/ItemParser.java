@@ -12,12 +12,13 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
 import java.util.concurrent.Callable;
+import java.util.function.Function;
 import lol.memory.ts.Item;
 import org.apache.commons.compress.compressors.bzip2.BZip2CompressorInputStream;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-final class ItemParser<E> implements Callable<FileResult<Item>> {
+final class ItemParser<E> implements Callable<FileResult<List<Optional<Item>>>> {
     private static final Logger logger = LoggerFactory.getLogger(ItemParser.class);
     private final Archive<E> archive;
     private final E entry;
@@ -27,7 +28,7 @@ final class ItemParser<E> implements Callable<FileResult<Item>> {
         this.entry = entry;
     }
 
-    public FileResult<Item> call() {
+    public FileResult<List<Optional<Item>>> call() {
         String path = this.archive.getEntryFilePath(entry);
 
         List<Optional<Item>> items = new ArrayList<Optional<Item>>(4096);
@@ -72,5 +73,13 @@ final class ItemParser<E> implements Callable<FileResult<Item>> {
         }
 
         return new FileResult(path, items);
+    }
+
+    public <T> Callable<FileResult<T>> andThen(Function<List<Optional<Item>>, T> transform) {
+        return new Callable<FileResult<T>>() {
+            public FileResult<T> call() {
+                return ItemParser.this.call().map(transform);
+            }
+        };
     }
 }
