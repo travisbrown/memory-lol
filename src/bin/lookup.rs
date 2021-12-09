@@ -1,4 +1,4 @@
-use clap::{crate_authors, crate_version, Parser};
+use clap::Parser;
 use memory_lol::{cli, error::Error, lookup::Lookup, report};
 
 fn main() -> Result<(), Error> {
@@ -85,7 +85,7 @@ fn main() -> Result<(), Error> {
 }
 
 #[derive(Parser)]
-#[clap(name = "lookup", version = crate_version!(), author = crate_authors!())]
+#[clap(name = "lookup", about, version, author)]
 struct Opts {
     /// Level of verbosity
     #[clap(short, long, parse(from_occurrences))]

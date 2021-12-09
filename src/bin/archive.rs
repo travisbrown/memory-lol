@@ -18,7 +18,11 @@ async fn main() -> Result<(), Error> {
     let mapping = unsafe { memmap::Mmap::map(&zip_file)? };
     let archive = ZipArchive::new(&mapping)?;
 
-    let iter = ZipIter { archive, current: None, state: None };
+    let iter = ZipIter {
+        archive,
+        current: None,
+        state: None,
+    };
 
     for res in iter {
         let line = res?;
