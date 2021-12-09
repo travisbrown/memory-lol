@@ -13,6 +13,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Function;
 import lol.memory.ts.archive.Archive;
 import lol.memory.ts.archive.FileResult;
@@ -31,6 +32,8 @@ final class MetadataImporter extends FileResultConsumer<MetadataBatch> {
 
     private final Database db;
     private final Map<String, Set<String>> completed;
+    private final AtomicInteger counter = new AtomicInteger();
+    public java.io.DataOutputStream out;
 
     public static void main(String[] args) throws IOException, RocksDBException {
         RocksDB.loadLibrary();
@@ -52,7 +55,8 @@ final class MetadataImporter extends FileResultConsumer<MetadataBatch> {
         files.sort(Comparator.comparing(file -> file.getName()));
 
         var dbPath = args[1];
-        FileResultConsumer<MetadataBatch> importer = new MetadataImporter(dbPath);
+        var importer = new MetadataImporter(dbPath);
+        importer.out = new java.io.DataOutputStream(new java.io.FileOutputStream("kvs.dat"));
 
         for (File file : files) {
             MetadataImporter.logger.info("Importing metadata from {}", file.getName());
@@ -60,6 +64,8 @@ final class MetadataImporter extends FileResultConsumer<MetadataBatch> {
 
             archive.processWithTransformation(MetadataImporter.ITEMS_TO_BATCH, importer);
         }
+
+        importer.out.close();
     }
 
     public MetadataImporter(String dbPath) throws RocksDBException {
@@ -105,73 +111,102 @@ final class MetadataImporter extends FileResultConsumer<MetadataBatch> {
     };
 
     public boolean accept(Path archivePath, FileResult<MetadataBatch> result) throws Exception {
+        /*
+         * if (this.counter.get() % 1000 == 999) { try { MetadataImporter.logger.info("Compacting database");
+         * this.db.compact(); } catch (RocksDBException error) {
+         * MetadataImporter.logger.error("Error compacting database: {}", error.getMessage()); } }
+         */
+
         MetadataBatch batch = result.getValue();
-        byte[][] allKeys = new byte[batch.users.size() + batch.screenNames.size() + batch.statuses.size()][];
+        Key[] allKeys = new Key[batch.users.size() + batch.screenNames.size() + batch.statuses.size()];
+        byte[][] rawKeys = new byte[batch.users.size() + batch.screenNames.size() + batch.statuses.size()][];
         int i = 0;
 
-        for (byte[] key : batch.users.keySet()) {
+
+        for (Key key : batch.users.keySet()) {
             allKeys[i] = key;
+            rawKeys[i] = key.bytes;
             i += 1;
         }
 
-        for (byte[] key : batch.screenNames.keySet()) {
+        for (Key key : batch.screenNames.keySet()) {
             allKeys[i] = key;
+            rawKeys[i] = key.bytes;
             i += 1;
         }
 
-        for (byte[] key : batch.statuses.keySet()) {
+        for (Key key : batch.statuses.keySet()) {
             allKeys[i] = key;
+            rawKeys[i] = key.bytes;
             i += 1;
         }
 
         try {
-            var tx = db.beginTransaction();
-            var values = tx.multiGetForUpdate(Database.getReadOptions(), allKeys);
+            var tx = this.db.beginTransaction();
+            //System.out.println("Before multiget");
+            //var values = tx.multiGet(Database.getReadOptions(), rawKeys);
+            //System.out.println("After multiget");
             int j = 0;
 
             for (; j < batch.users.size(); j += 1) {
                 var key = allKeys[j];
-                var value = values[j];
+                //var value = values[j];
                 var newValues = batch.users.get(key);
 
+                /*
                 if (value != null) {
                     var longs = Entry.bytesToLongs(value);
+
                     for (int k = 0; k < longs.length; k += 1) {
                         newValues.add(longs[k]);
                     }
-                }
+                }*/
 
                 List<Long> asList = new ArrayList<>(newValues);
                 java.util.Collections.sort(asList);
 
-                tx.put(key, Entry.longsToBytes(asList));
+                var valBytes = Entry.longsToBytes(asList);
+
+                out.writeInt(key.bytes.length);
+                out.write(key.bytes);
+                out.writeInt(valBytes.length);
+                out.write(valBytes);
+
+                //tx.put(key.bytes, Entry.longsToBytes(asList));
             }
 
             for (; j < batch.users.size() + batch.screenNames.size(); j += 1) {
                 var key = allKeys[j];
-                var value = values[j];
+                //var value = values[j];
                 var newValues = batch.screenNames.get(key);
 
-                if (value != null) {
+                /*if (value != null) {
                     var longs = Entry.bytesToLongs(value);
                     for (int k = 0; k < longs.length; k += 1) {
                         newValues.add(longs[k]);
                     }
-                }
+                }*/
 
                 List<Long> asList = new ArrayList<>(newValues);
                 java.util.Collections.sort(asList);
 
-                tx.put(key, Entry.longsToBytes(asList));
+                var valBytes = Entry.longsToBytes(asList);
+
+                out.writeInt(key.bytes.length);
+                out.write(key.bytes);
+                out.writeInt(valBytes.length);
+                out.write(valBytes);
+
+                //tx.put(key.bytes, Entry.longsToBytes(asList));
             }
 
             for (; j < batch.users.size() + batch.screenNames.size() + batch.statuses.size(); j += 1) {
                 var key = allKeys[j];
-                var value = values[j];
+                //var value = values[j];
                 var newValue = batch.statuses.get(key);
                 boolean abort = false;
 
-                if (value != null) {
+                /*if (value != null) {
                     if (!Arrays.equals(value, newValue)) {
                         var current = StatusValue.parseByteArray(newValue);
                         var previous = StatusValue.parseByteArray(value);
@@ -180,14 +215,14 @@ final class MetadataImporter extends FileResultConsumer<MetadataBatch> {
                             var updated = current.merge(previous);
 
                             if (updated != current) {
-                                var statusId = Entry.readLong(key, 1);
+                                var statusId = Entry.readLong(key.bytes, 1);
 
                                 MetadataImporter.logger.warn("Updated existing status {} ({}, {})", statusId,
                                         archivePath, result.getPath());
                                 newValue = updated.toByteArray();
                             }
                         } catch (StatusValue.StatusValueMergeException error) {
-                            var statusId = Entry.readLong(key, 1);
+                            var statusId = Entry.readLong(key.bytes, 1);
 
                             MetadataImporter.logger.error("Error processing status {} ({}, {}): {}", statusId,
                                     archivePath, result.getPath(), error.getMessage());
@@ -197,17 +232,22 @@ final class MetadataImporter extends FileResultConsumer<MetadataBatch> {
                 }
 
                 if (!abort) {
-                    tx.put(key, newValue);
-                }
+                    tx.put(key.bytes, newValue);
+                }*/
+
+                out.writeInt(key.bytes.length);
+                out.write(key.bytes);
+                out.writeInt(newValue.length);
+                out.write(newValue);
             }
 
-            for (Map.Entry<byte[], Long> entry : batch.shortStatuses.entrySet()) {
+            /*for (Map.Entry<Key, Long> entry : batch.shortStatuses.entrySet()) {
                 byte[] value = new byte[8];
                 Entry.writeLong(value, 0, entry.getValue());
-                tx.put(entry.getKey(), value);
+                tx.put(entry.getKey().bytes, value);
             }
 
-            for (Map.Entry<byte[], Optional<Long>> entry : batch.deletes.entrySet()) {
+            for (Map.Entry<Key, Optional<Long>> entry : batch.deletes.entrySet()) {
                 byte[] value;
                 if (!entry.getValue().isPresent()) {
                     value = new byte[0];
@@ -215,7 +255,7 @@ final class MetadataImporter extends FileResultConsumer<MetadataBatch> {
                     value = new byte[8];
                     Entry.writeLong(value, 0, entry.getValue().get());
                 }
-                tx.put(entry.getKey(), value);
+                tx.put(entry.getKey().bytes, value);
             }
 
             var completedFileKey = MetadataImporter.makeCompletedFileKey(archivePath.getFileName().toString(),
@@ -225,13 +265,19 @@ final class MetadataImporter extends FileResultConsumer<MetadataBatch> {
             tx.put(completedFileKey, completedFileValue);
 
             tx.commit();
-        } catch (RocksDBException error) {
+            */
+        //} catch (RocksDBException error) {
+        } catch (IOException error) {
             MetadataImporter.logger.error("RocksDb error ({}, {}): {}", archivePath, result.getPath(),
                     error.getMessage());
             return false;
         }
 
-        MetadataImporter.logger.info("Completed file: {}", result.getPath());
+        MetadataImporter.logger.info("Completed file ({}; multiget keys: {}): {}", this.counter.get(), allKeys.length,
+                result.getPath());
+
+        this.counter.incrementAndGet();
+
         return true;
     }
 
@@ -266,14 +312,38 @@ final class MetadataImporter extends FileResultConsumer<MetadataBatch> {
     }
 }
 
+final class Key {
+    final byte[] bytes;
+
+    public Key(byte[] bytes) {
+        this.bytes = bytes;
+    }
+
+    @Override
+    public boolean equals(Object that) {
+        if (that == this) {
+            return true;
+        } else if (!(that instanceof Key)) {
+            return false;
+        } else {
+            return Arrays.equals(this.bytes, ((Key) that).bytes);
+        }
+    }
+
+    @Override
+    public int hashCode() {
+        return Arrays.hashCode(this.bytes);
+    }
+}
+
 final class MetadataBatch {
     private static final Logger logger = LoggerFactory.getLogger(MetadataBatch.class);
 
-    final Map<byte[], Set<Long>> users = new HashMap<>();
-    final Map<byte[], Set<Long>> screenNames = new HashMap<>();
-    final Map<byte[], byte[]> statuses = new HashMap<>();
-    final Map<byte[], Long> shortStatuses = new HashMap<>();
-    final Map<byte[], Optional<Long>> deletes = new HashMap<>();
+    final Map<Key, Set<Long>> users = new HashMap<>();
+    final Map<Key, Set<Long>> screenNames = new HashMap<>();
+    final Map<Key, byte[]> statuses = new HashMap<>();
+    final Map<Key, Long> shortStatuses = new HashMap<>();
+    final Map<Key, Optional<Long>> deletes = new HashMap<>();
 
     private static byte[] makeUserKey(long userId, String screenName) {
         byte[] screenNameBytes = screenName.getBytes(StandardCharsets.UTF_8);
@@ -315,7 +385,11 @@ final class MetadataBatch {
     }
 
     private void addUser(long userId, String screenName, long sourceStatusId) {
-        var userKey = MetadataBatch.makeUserKey(userId, screenName);
+        /*
+         * if (userId == 204277565) { System.out.printf("HIT: %d\n", sourceStatusId); }
+         */
+
+        var userKey = new Key(MetadataBatch.makeUserKey(userId, screenName));
         var userValue = this.users.get(userKey);
         if (userValue == null) {
             userValue = new HashSet<>();
@@ -323,7 +397,7 @@ final class MetadataBatch {
         }
         userValue.add(sourceStatusId);
 
-        var screenNameKey = MetadataBatch.makeScreenNameKey(screenName);
+        var screenNameKey = new Key(MetadataBatch.makeScreenNameKey(screenName));
         var screenNameValue = this.screenNames.get(screenNameKey);
         if (screenNameValue == null) {
             screenNameValue = new HashSet<>();
@@ -335,7 +409,8 @@ final class MetadataBatch {
     public void addItem(Item item) {
         if (item.isDelete()) {
             var delete = item.asDelete().get();
-            this.deletes.put(makeDeleteKey(delete.getUserId(), delete.getStatusId()), delete.getTimestampMillis());
+            this.deletes.put(new Key(makeDeleteKey(delete.getUserId(), delete.getStatusId())),
+                    delete.getTimestampMillis());
         } else {
             this.addTweet(item.asTweet().get());
         }
@@ -351,19 +426,19 @@ final class MetadataBatch {
         var maybeQuotedStatusId = tweet.getQuotedStatusId();
         var maybeQuotedStatus = tweet.getQuotedStatus();
 
-        StatusValue userValue;
+        StatusValue statusValue;
 
         if (maybeRetweetedStatus.isPresent()) {
             var retweetedStatus = maybeRetweetedStatus.get();
 
             this.addTweet(retweetedStatus);
-            userValue = StatusValue.ofRetweet(userInfo.getUserId(), tweet.getTimestampMillis(),
+            statusValue = StatusValue.ofRetweet(userInfo.getUserId(), tweet.getTimestampMillis(),
                     retweetedStatus.getStatusId());
         } else {
             if (maybeReplyInfo.isPresent()) {
                 var replyInfo = maybeReplyInfo.get();
                 this.addUser(replyInfo.getUserId(), replyInfo.getScreenName(), tweet.getSourceStatusId());
-                this.shortStatuses.put(MetadataBatch.makeShortStatusKey(replyInfo.getStatusId()),
+                this.shortStatuses.put(new Key(MetadataBatch.makeShortStatusKey(replyInfo.getStatusId())),
                         replyInfo.getUserId());
             }
 
@@ -385,11 +460,11 @@ final class MetadataBatch {
                 this.addUser(user.getUserId(), user.getScreenName(), tweet.getSourceStatusId());
             }
 
-            userValue = StatusValue.ofTweet(userInfo.getUserId(), tweet.getTimestampMillis(),
+            statusValue = StatusValue.ofTweet(userInfo.getUserId(), tweet.getTimestampMillis(),
                     maybeReplyInfo.map(replyInfo -> replyInfo.getStatusId()), maybeQuotedStatusId, mentionedIds);
         }
 
-        var statusKey = MetadataBatch.makeFullStatusKey(tweet.getStatusId());
-        this.statuses.put(statusKey, userValue.toByteArray());
+        var statusKey = new Key(MetadataBatch.makeFullStatusKey(tweet.getStatusId()));
+        this.statuses.put(statusKey, statusValue.toByteArray());
     }
 }

@@ -1,5 +1,5 @@
 use clap::{crate_authors, crate_version, Parser};
-use memory_lol::{cli, error::Error, lookup::Lookup};
+use memory_lol::{cli, error::Error, lookup::Lookup, report};
 
 fn main() -> Result<(), Error> {
     let opts: Opts = Opts::parse();
@@ -19,7 +19,12 @@ fn main() -> Result<(), Error> {
         SubCommand::User { user_id } => {
             let db = Lookup::new(opts.db)?;
             let result = db.lookup_user(user_id)?;
-            println!("{:?}", result);
+            println!("{}", serde_json::to_string(&result)?);
+        }
+        SubCommand::UserReport { user_id } => {
+            let db = Lookup::new(opts.db)?;
+            let report = report::generate_user_report(&db, user_id)?;
+            println!("{}", serde_json::to_string(&report)?);
         }
         SubCommand::Deletes { user_id } => {
             let db = Lookup::new(opts.db)?;
@@ -103,6 +108,10 @@ enum SubCommand {
         status_id: u64,
     },
     User {
+        /// User ID
+        user_id: u64,
+    },
+    UserReport {
         /// User ID
         user_id: u64,
     },

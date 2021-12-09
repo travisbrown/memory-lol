@@ -10,6 +10,8 @@ pub enum Error {
     Utf8(#[from] std::str::Utf8Error),
     #[error("RocksDb error")]
     Db(#[from] rocksdb::Error),
+    #[error("Zip error")]
+    Zip(#[from] piz::result::ZipError),
     #[error("Unexpected key: {0}")]
     UnexpectedKey(String),
     #[error("Avro decoding error")]

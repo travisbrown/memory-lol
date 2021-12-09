@@ -1,7 +1,7 @@
 use super::error::Error;
 use byteorder::{ReadBytesExt, WriteBytesExt, BE};
 use chrono::{DateTime, NaiveDateTime, Utc};
-use rocksdb::{Options, DB};
+use rocksdb::{MergeOperands, Options, DB};
 use std::io::Cursor;
 use std::path::Path;
 
@@ -36,7 +36,8 @@ pub struct Lookup {
 
 impl Lookup {
     pub fn new<P: AsRef<Path>>(path: P) -> Result<Lookup, Error> {
-        let options = Options::default();
+        let mut options = Options::default();
+        options.set_merge_operator_associative("merge", Self::merge);
         let db = DB::open(&options, path)?;
 
         Ok(Lookup { db })
@@ -100,6 +101,16 @@ impl Lookup {
         }
 
         Ok(result)
+    }
+
+    /// If the user has had multiple screen names, returns the most attested one.
+    pub fn lookup_user_screen_name(&self, user_id: u64) -> Result<Option<String>, Error> {
+        let by_screen_name = self.lookup_user(user_id)?;
+
+        Ok(by_screen_name
+            .into_iter()
+            .max_by_key(|(_, ids)| ids.len())
+            .map(|(screen_name, _)| screen_name))
     }
 
     pub fn lookup_screen_name(&self, screen_name: &str) -> Result<Vec<u64>, Error> {
@@ -344,6 +355,56 @@ impl Lookup {
             completed_file_count,
         })
     }
+
+    fn merge(
+        key: &[u8],
+        existing_val: Option<&[u8]>,
+        operands: &mut MergeOperands,
+    ) -> Option<Vec<u8>> {
+        if key[0] == 0 {
+            // || key[0] == 1 {
+            //println!("HIT: {} {}", key.len(), existing_val.is_some());
+            Some(Self::merge_longs(existing_val, operands))
+        } else {
+            //operands.last().map(|v| v.to_vec())
+            None
+        }
+    }
+
+    fn to_longs(bytes: &[u8]) -> Vec<u64> {
+        let mut cursor = Cursor::new(bytes);
+        let mut result = Vec::with_capacity(bytes.len() / 8);
+        while !cursor.is_empty() {
+            result.push(cursor.read_u64::<BE>().unwrap());
+        }
+        result
+    }
+
+    fn merge_longs(existing_val: Option<&[u8]>, operands: &mut MergeOperands) -> Vec<u8> {
+        let mut result = Vec::with_capacity(operands.size_hint().0 * 8 + 8);
+
+        if let Some(bytes) = existing_val {
+            result.extend(Self::to_longs(bytes));
+        }
+
+        for operand in operands {
+            result.extend(Self::to_longs(operand));
+        }
+
+        result.sort_unstable();
+        result.dedup();
+
+        let mut bytes = Vec::with_capacity(result.len() * 8);
+
+        for r in result {
+            bytes.write_u64::<BE>(r).unwrap();
+        }
+        /*if bytes.len() > 8 {
+            println!("{}", bytes.len());
+        }*/
+
+        bytes
+    }
 }
 
 const FIRST_SNOWFLAKE: u64 = 250000000000000;
@@ -408,6 +469,13 @@ impl TweetMetadata {
             Self::Short { status_id, .. } => *status_id,
             Self::Full { status_id, .. } => *status_id,
             Self::Retweet { status_id, .. } => *status_id,
+        }
+    }
+    pub fn user_id(&self) -> u64 {
+        match self {
+            Self::Short { user_id, .. } => *user_id,
+            Self::Full { user_id, .. } => *user_id,
+            Self::Retweet { user_id, .. } => *user_id,
         }
     }
     pub fn timestamp(&self) -> Option<DateTime<Utc>> {
