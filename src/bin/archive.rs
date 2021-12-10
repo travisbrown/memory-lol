@@ -1,15 +1,11 @@
 #![feature(cursor_remaining)]
 
-use byteorder::{ReadBytesExt, WriteBytesExt, BE};
 use bzip2::read::MultiBzDecoder;
-use futures::stream::{LocalBoxStream, StreamExt, TryStreamExt};
 use memory_lol::error::Error;
 use piz::ZipArchive;
-use rocksdb::{IteratorMode, MergeOperands, Options, DB};
 use std::ffi::OsStr;
 use std::fs::File;
-use std::io::{BufRead, BufReader, Cursor, Read};
-use std::path::Path;
+use std::io::{BufRead, BufReader, Read};
 
 #[tokio::main]
 async fn main() -> Result<(), Error> {
@@ -85,7 +81,7 @@ impl<'a> Iterator for ZipIter<'a> {
 
                 match last {
                     Some(reader) => {
-                        self.state.insert(readers);
+                        self.state = Some(readers);
                         Box::new(BufReader::new(MultiBzDecoder::new(reader)).lines())
                     }
                     None => {
@@ -97,7 +93,7 @@ impl<'a> Iterator for ZipIter<'a> {
 
         match current.next() {
             Some(value) => {
-                self.current.insert(current);
+                self.current = Some(current);
                 Some(value)
             }
             None => self.next(),

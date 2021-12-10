@@ -1,6 +1,5 @@
 use super::{super::Tag, merge_sorted_u64s, Entry, MergeCollision, U64Iter};
 use byteorder::{ReadBytesExt, WriteBytesExt, BE};
-use chrono::{DateTime, Utc};
 use std::convert::TryInto;
 use std::io::Cursor;
 
@@ -23,18 +22,17 @@ impl Entry for UserEntry {
         let mut cursor = Cursor::new(&self.key);
 
         if let Ok(tag) = cursor.read_u8() {
-            if tag == Tag::User.value() {
-                if cursor.read_u64::<BE>().is_ok()
-                    && std::str::from_utf8(cursor.remaining_slice()).is_ok()
-                {
-                    let mut cursor = Cursor::new(&self.value);
-                    while !cursor.is_empty() {
-                        if !cursor.read_u64::<BE>().is_ok() {
-                            return false;
-                        }
+            if tag == Tag::User.value()
+                && cursor.read_u64::<BE>().is_ok()
+                && std::str::from_utf8(cursor.remaining_slice()).is_ok()
+            {
+                let mut cursor = Cursor::new(&self.value);
+                while !cursor.is_empty() {
+                    if cursor.read_u64::<BE>().is_err() {
+                        return false;
                     }
-                    return true;
                 }
+                return true;
             }
         }
 

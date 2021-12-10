@@ -2,7 +2,7 @@
 
 use byteorder::{ReadBytesExt, WriteBytesExt, BE};
 use memory_lol::error::Error;
-use rocksdb::{IteratorMode, MergeOperands, Options, DB};
+use rocksdb::{MergeOperands, Options, DB};
 use std::io::{Cursor, Read};
 use std::path::Path;
 
@@ -16,7 +16,7 @@ fn main() -> Result<(), Error> {
 
     let db = Mapping::new("output.db")?;
 
-    while let Ok(_) = res {
+    while res.is_ok() {
         let length = u32::from_be_bytes(length_buf);
         //println!("{}", length);
 
@@ -31,7 +31,7 @@ fn main() -> Result<(), Error> {
 
         let mut cursor = Cursor::new(key_buf.clone());
         let tag = cursor.read_u8()?;
-        let id = if tag == 1 {
+        let _id = if tag == 1 {
             0
         } else {
             cursor.read_u64::<BE>()?

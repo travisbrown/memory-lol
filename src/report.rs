@@ -2,17 +2,11 @@ use super::{
     error::Error,
     lookup::{Lookup, TweetMetadata},
 };
-use byteorder::{ReadBytesExt, WriteBytesExt, BE};
-use chrono::{DateTime, NaiveDateTime, Utc};
+use chrono::{DateTime, Utc};
 use itertools::Itertools;
-use rocksdb::{Options, DB};
 use serde::Serialize;
-use std::collections::hash_map::Entry;
 use std::collections::HashMap;
 use std::collections::HashSet;
-use std::fmt::Display;
-use std::io::Cursor;
-use std::path::Path;
 
 #[derive(Debug, Default, Serialize)]
 pub struct UserReport {
@@ -63,7 +57,7 @@ impl UserRelations {
         for (user_id, group) in &batch.iter().group_by(|(user_id, _)| user_id) {
             if let Some(screen_name) = user_db.get(user_id) {
                 let mut status_ids = group.map(|(_, status_id)| *status_id).collect::<Vec<_>>();
-                status_ids.sort();
+                status_ids.sort_unstable();
                 status_ids.dedup();
 
                 result.insert(*user_id, (screen_name.to_string(), status_ids));
@@ -74,14 +68,14 @@ impl UserRelations {
     }
 
     fn add(&mut self, target_user_id: u64, db: &HashMap<u64, TweetMetadata>, status_id: u64) {
-        match db.get(&status_id) {
-            Some(metadata) => match metadata {
+        if let Some(metadata) = db.get(&status_id) {
+            match metadata {
                 TweetMetadata::Retweet {
                     user_id,
                     retweeted_id,
                     ..
-                } => match db.get(retweeted_id) {
-                    Some(retweeted_metadata) => {
+                } => {
+                    if let Some(retweeted_metadata) = db.get(retweeted_id) {
                         if *user_id == target_user_id {
                             self.retweets
                                 .insert((retweeted_metadata.user_id(), *retweeted_id));
@@ -89,8 +83,7 @@ impl UserRelations {
                             self.retweeted_by.insert((*user_id, *retweeted_id));
                         }
                     }
-                    None => {}
-                },
+                }
                 TweetMetadata::Full {
                     user_id,
                     replied_to_id,
@@ -122,7 +115,7 @@ impl UserRelations {
                             self.replied_to_by.insert((*user_id, status_id));
                         }
                     }
-                    if let Some(quoted_metadata) = quoted_metadata {
+                    if let Some(_quoted_metadata) = quoted_metadata {
                         self.quoted_by.insert((*user_id, status_id));
                     }
 
@@ -133,8 +126,7 @@ impl UserRelations {
                     }
                 }
                 _ => {}
-            },
-            None => {}
+            }
         }
     }
 }
@@ -146,7 +138,7 @@ pub fn generate_user_report(lookup: &Lookup, user_id: u64) -> Result<UserReport,
         .flat_map(|(_, ids)| ids)
         .collect::<HashSet<_>>();
 
-    let mut status_maybe_metadata = status_ids
+    let status_maybe_metadata = status_ids
         .iter()
         .map(|status_id| {
             lookup
@@ -160,7 +152,7 @@ pub fn generate_user_report(lookup: &Lookup, user_id: u64) -> Result<UserReport,
         .filter_map(|(k, v)| v.map(|v| (k, v)))
         .collect::<HashMap<u64, TweetMetadata>>();
 
-    let mut new_status_metadata = status_metadata
+    let new_status_metadata = status_metadata
         .values()
         .flat_map(|status| match status {
             TweetMetadata::Retweet { retweeted_id, .. } => {
@@ -228,13 +220,13 @@ pub fn generate_user_report(lookup: &Lookup, user_id: u64) -> Result<UserReport,
                             .filter(|value| *value <= timestamp)
                             .take()
                             .unwrap_or(timestamp);
-                        first_seen.insert(new_first_seen);
+                        first_seen = Some(new_first_seen);
 
                         let new_last_seen = last_seen
                             .filter(|value| *value >= timestamp)
                             .take()
                             .unwrap_or(timestamp);
-                        last_seen.insert(new_last_seen);
+                        last_seen = Some(new_last_seen);
                     }
 
                     count += 1;

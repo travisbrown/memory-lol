@@ -23,26 +23,25 @@ impl Entry for FullStatusEntry {
         let mut cursor = Cursor::new(&self.key);
 
         if let Ok(tag) = cursor.read_u8() {
-            if tag == Tag::FullStatus.value() {
-                if cursor.read_u64::<BE>().is_ok()
-                    && std::str::from_utf8(cursor.remaining_slice()).is_ok()
-                {
-                    let mut cursor = Cursor::new(&self.value);
+            if tag == Tag::FullStatus.value()
+                && cursor.read_u64::<BE>().is_ok()
+                && std::str::from_utf8(cursor.remaining_slice()).is_ok()
+            {
+                let mut cursor = Cursor::new(&self.value);
 
-                    if let Ok(tag) = cursor.read_u8() {
-                        if tag == 4 {
-                            return cursor.read_u64::<BE>().is_ok()
-                                && cursor.read_u64::<BE>().is_ok()
-                                && cursor.read_u64::<BE>().is_ok()
-                                && cursor.is_empty();
-                        } else {
-                            while !cursor.is_empty() {
-                                if !cursor.read_u64::<BE>().is_ok() {
-                                    return false;
-                                }
+                if let Ok(tag) = cursor.read_u8() {
+                    if tag == 4 {
+                        return cursor.read_u64::<BE>().is_ok()
+                            && cursor.read_u64::<BE>().is_ok()
+                            && cursor.read_u64::<BE>().is_ok()
+                            && cursor.is_empty();
+                    } else {
+                        while !cursor.is_empty() {
+                            if cursor.read_u64::<BE>().is_err() {
+                                return false;
                             }
-                            return true;
                         }
+                        return true;
                     }
                 }
             }
@@ -69,7 +68,7 @@ impl Entry for FullStatusEntry {
         let mut timestamp = existing_value.map(Self::extract_timestamp);
         let mut tag = existing_value.map(|bytes| bytes[0]);
 
-        for operand in operands {
+        /*for operand in operands {
             let next_user_id = Self::extract_user_id(operand);
             let next_timestamp = Self::extract_timestamp(operand);
             let next_tag = operand[0];
@@ -124,7 +123,9 @@ impl Entry for FullStatusEntry {
                     tag.insert(next_tag);
                 }
             }
-        }
+        }*/
+
+        (None, None)
     }
 }
 
@@ -145,9 +146,11 @@ impl FullStatusEntry {
         let key = Self::make_key(status_id);
         let mut value = Vec::with_capacity(25);
         value.write_u8(4).unwrap();
-        value.write_u64::<BE>(user_id);
-        value.write_u64::<BE>(timestamp.timestamp_millis() as u64);
-        value.write_u64::<BE>(retweeted_status_id);
+        value.write_u64::<BE>(user_id).unwrap();
+        value
+            .write_u64::<BE>(timestamp.timestamp_millis() as u64)
+            .unwrap();
+        value.write_u64::<BE>(retweeted_status_id).unwrap();
 
         Self { key, value }
     }
@@ -171,19 +174,21 @@ impl FullStatusEntry {
 
         let mut value = Vec::with_capacity(25);
         value.write_u8(tag).unwrap();
-        value.write_u64::<BE>(user_id);
-        value.write_u64::<BE>(timestamp.timestamp_millis() as u64);
+        value.write_u64::<BE>(user_id).unwrap();
+        value
+            .write_u64::<BE>(timestamp.timestamp_millis() as u64)
+            .unwrap();
 
         if let Some(status_id) = replied_to_status_id {
-            value.write_u64::<BE>(status_id);
+            value.write_u64::<BE>(status_id).unwrap();
         }
 
         if let Some(status_id) = quoted_status_id {
-            value.write_u64::<BE>(status_id);
+            value.write_u64::<BE>(status_id).unwrap();
         }
 
         for user_id in mentioned_user_ids {
-            value.write_u64::<BE>(user_id);
+            value.write_u64::<BE>(user_id).unwrap();
         }
         println!("{}", value.len());
 
