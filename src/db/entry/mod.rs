@@ -7,6 +7,7 @@ pub use screen_name::ScreenNameEntry;
 pub use user::UserEntry;
 
 use byteorder::{ReadBytesExt, WriteBytesExt, BE};
+use chrono::{DateTime, Utc};
 use std::collections::BinaryHeap;
 use std::io::Cursor;
 
@@ -40,7 +41,16 @@ pub trait Entry {
     ) -> (Option<Vec<u8>>, Option<MergeCollision>);
 }
 
-pub enum MergeCollision {}
+pub enum MergeCollision {
+    UserId {
+        previous: u64,
+        update: u64,
+    },
+    Timestamp {
+        previous: DateTime<Utc>,
+        update: DateTime<Utc>,
+    },
+}
 
 pub struct U64Iter<'a> {
     cursor: Cursor<&'a [u8]>,
@@ -90,13 +100,18 @@ fn merge_sorted_u64s<'a, I: Iterator<Item = &'a [u8]>>(
     }
 
     let mut values = heap.into_sorted_vec();
-    values.dedup();
 
-    let mut result = Vec::with_capacity(values.len() * 8);
+    if values.is_empty() {
+        None
+    } else {
+        values.dedup();
 
-    for value in values {
-        result.write_u64::<BE>(value).unwrap();
+        let mut result = Vec::with_capacity(values.len() * 8);
+
+        for value in values {
+            result.write_u64::<BE>(value).unwrap();
+        }
+
+        Some(result)
     }
-
-    Some(result)
 }

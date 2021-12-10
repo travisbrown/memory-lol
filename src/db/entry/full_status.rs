@@ -65,7 +65,66 @@ impl Entry for FullStatusEntry {
         existing_value: Option<&'a [u8]>,
         operands: &'a mut I,
     ) -> (Option<Vec<u8>>, Option<MergeCollision>) {
-        todo![]
+        let mut user_id = existing_value.map(Self::extract_user_id);
+        let mut timestamp = existing_value.map(Self::extract_timestamp);
+        let mut tag = existing_value.map(|bytes| bytes[0]);
+
+        for operand in operands {
+            let next_user_id = Self::extract_user_id(operand);
+            let next_timestamp = Self::extract_timestamp(operand);
+            let next_tag = operand[0];
+
+            match user_id {
+                Some(previous_user_id) => {
+                    if previous_user_id != next_user_id {
+                        return (
+                            None,
+                            Some(MergeCollision::UserId {
+                                previous: previous_user_id,
+                                update: next_user_id,
+                            }),
+                        );
+                    }
+                }
+                None => {
+                    user_id.insert(next_user_id);
+                }
+            }
+
+            match timestamp {
+                Some(previous_timestamp) => {
+                    if previous_timestamp != next_timestamp {
+                        return (
+                            None,
+                            Some(MergeCollision::Timestamp {
+                                previous: previous_timestamp,
+                                update: next_timestamp,
+                            }),
+                        );
+                    }
+                }
+                None => {
+                    timestamp.insert(next_timestamp);
+                }
+            }
+
+            match tag {
+                Some(previous_tag) => {
+                    if previous_tag != next_timestamp {
+                        return (
+                            None,
+                            Some(MergeCollision::Timestamp {
+                                previous: previous_timestamp,
+                                update: next_timestamp,
+                            }),
+                        );
+                    }
+                }
+                None => {
+                    tag.insert(next_tag);
+                }
+            }
+        }
     }
 }
 
@@ -131,54 +190,74 @@ impl FullStatusEntry {
         Self { key, value }
     }
 
-    fn get_tag(&self) -> u8 {
-        self.value[0]
-    }
-
     pub fn get_status_id(&self) -> u64 {
         u64::from_be_bytes(self.key[1..9].try_into().unwrap())
     }
 
     pub fn get_user_id(&self) -> u64 {
-        u64::from_be_bytes(self.value[1..9].try_into().unwrap())
+        Self::extract_user_id(&self.value)
     }
 
     pub fn get_timestamp(&self) -> DateTime<Utc> {
-        Utc.timestamp_millis(u64::from_be_bytes(self.value[9..17].try_into().unwrap()) as i64)
+        Self::extract_timestamp(&self.value)
     }
 
     pub fn get_retweeted_status_id(&self) -> Option<u64> {
-        if self.get_tag() == 4 {
-            Some(u64::from_be_bytes(self.value[17..25].try_into().unwrap()))
-        } else {
-            None
-        }
+        Self::extract_retweeted_status_id(&self.value)
     }
 
     pub fn get_replied_to_status_id(&self) -> Option<u64> {
-        let tag = self.get_tag();
-
-        if tag == 1 || tag == 3 {
-            Some(u64::from_be_bytes(self.value[17..25].try_into().unwrap()))
-        } else {
-            None
-        }
+        Self::extract_replied_to_status_id(&self.value)
     }
 
     pub fn get_quoted_status_id(&self) -> Option<u64> {
-        let tag = self.get_tag();
+        Self::extract_quoted_status_id(&self.value)
+    }
 
-        if tag == 2 {
-            Some(u64::from_be_bytes(self.value[17..25].try_into().unwrap()))
-        } else if tag == 3 {
-            Some(u64::from_be_bytes(self.value[25..33].try_into().unwrap()))
+    pub fn get_mentioned_user_ids(&self) -> U64Iter {
+        Self::extract_mentioned_user_ids(&self.value)
+    }
+
+    fn extract_user_id(value: &[u8]) -> u64 {
+        u64::from_be_bytes(value[1..9].try_into().unwrap())
+    }
+
+    fn extract_timestamp(value: &[u8]) -> DateTime<Utc> {
+        Utc.timestamp_millis(u64::from_be_bytes(value[9..17].try_into().unwrap()) as i64)
+    }
+
+    fn extract_retweeted_status_id(value: &[u8]) -> Option<u64> {
+        if value[0] == 4 {
+            Some(u64::from_be_bytes(value[17..25].try_into().unwrap()))
         } else {
             None
         }
     }
 
-    pub fn get_mentioned_user_ids(&self) -> U64Iter {
-        let tag = self.get_tag();
+    fn extract_replied_to_status_id(value: &[u8]) -> Option<u64> {
+        let tag = value[0];
+
+        if tag == 1 || tag == 3 {
+            Some(u64::from_be_bytes(value[17..25].try_into().unwrap()))
+        } else {
+            None
+        }
+    }
+
+    fn extract_quoted_status_id(value: &[u8]) -> Option<u64> {
+        let tag = value[0];
+
+        if tag == 2 {
+            Some(u64::from_be_bytes(value[17..25].try_into().unwrap()))
+        } else if tag == 3 {
+            Some(u64::from_be_bytes(value[25..33].try_into().unwrap()))
+        } else {
+            None
+        }
+    }
+
+    fn extract_mentioned_user_ids(value: &[u8]) -> U64Iter {
+        let tag = value[0];
 
         if tag == 4 {
             U64Iter::empty()
@@ -191,7 +270,7 @@ impl FullStatusEntry {
                 33
             };
             U64Iter {
-                cursor: Cursor::new(&self.value[offset..]),
+                cursor: Cursor::new(&value[offset..]),
             }
         }
     }
