@@ -37,11 +37,21 @@ pub trait Entry {
     fn merge<'a, I: Iterator<Item = &'a [u8]>>(
         existing_value: Option<&'a [u8]>,
         operands: &'a mut I,
-    ) -> Option<Vec<u8>>;
+    ) -> (Option<Vec<u8>>, Option<MergeCollision>);
 }
+
+pub enum MergeCollision {}
 
 pub struct U64Iter<'a> {
     cursor: Cursor<&'a [u8]>,
+}
+
+impl U64Iter<'_> {
+    fn empty() -> U64Iter<'static> {
+        U64Iter {
+            cursor: Cursor::new(&[]),
+        }
+    }
 }
 
 impl Iterator for U64Iter<'_> {

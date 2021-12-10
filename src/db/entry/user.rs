@@ -1,4 +1,4 @@
-use super::{super::Tag, merge_sorted_u64s, Entry, U64Iter};
+use super::{super::Tag, merge_sorted_u64s, Entry, MergeCollision, U64Iter};
 use byteorder::{ReadBytesExt, WriteBytesExt, BE};
 use chrono::{DateTime, Utc};
 use std::convert::TryInto;
@@ -54,8 +54,8 @@ impl Entry for UserEntry {
     fn merge<'a, I: Iterator<Item = &'a [u8]>>(
         existing_value: Option<&'a [u8]>,
         operands: &'a mut I,
-    ) -> Option<Vec<u8>> {
-        merge_sorted_u64s(existing_value, operands)
+    ) -> (Option<Vec<u8>>, Option<MergeCollision>) {
+        (merge_sorted_u64s(existing_value, operands), None)
     }
 }
 
@@ -105,13 +105,13 @@ mod tests {
     use std::collections::HashSet;
 
     proptest! {
-      #[test]
-      fn user_entry_round_trip(user_id: u64, screen_name: String, status_ids: HashSet<u64>) {
-          let entry = UserEntry::new(user_id, &screen_name, status_ids.clone());
-          assert_eq!(entry.validate(), true);
-          assert_eq!(entry.get_user_id(), user_id);
-          assert_eq!(entry.get_screen_name(), screen_name);
-          assert_eq!(entry.get_status_ids().collect::<HashSet<_>>(), status_ids);
-      }
+        #[test]
+        fn round_trip(user_id: u64, screen_name: String, status_ids: HashSet<u64>) {
+            let entry = UserEntry::new(user_id, &screen_name, status_ids.clone());
+            assert_eq!(entry.validate(), true);
+            assert_eq!(entry.get_user_id(), user_id);
+            assert_eq!(entry.get_screen_name(), screen_name);
+            assert_eq!(entry.get_status_ids().collect::<HashSet<_>>(), status_ids);
+        }
     }
 }
